@@ -13,7 +13,8 @@ module admin_address::fund_deposit {
     const SEED: vector<u8> = b"01";
 
     struct FundDeposits has key {
-        amount: coin::Coin<AptosCoin>,
+        amount: u64,
+        signer_cap: account::SignerCapability
     }
 
     struct WhiteListedUsers has key {
@@ -60,7 +61,7 @@ module admin_address::fund_deposit {
     #[view]
     public fun get_contract_balance(): u64 acquires FundDeposits {
         let resource_account_addr = get_resource_account();
-        coin::value(&borrow_global<FundDeposits>(resource_account_addr).amount)
+        borrow_global<FundDeposits>(resource_account_addr).amount
     }
 
     #[view]
@@ -78,9 +79,11 @@ module admin_address::fund_deposit {
         assert_is_owner(admin_addr);
 
         let (resource_signer, resource_signer_cap) = account::create_resource_account(admin, SEED);
+        coin::register<AptosCoin>(&resource_signer);
         
         let fund_deposits = FundDeposits {
-            amount: coin::zero<AptosCoin>(),
+            amount: 0,
+            signer_cap: resource_signer_cap
         };
         move_to(&resource_signer, fund_deposits);
 
@@ -97,10 +100,11 @@ module admin_address::fund_deposit {
         assert_is_whitelisted(users.list_of_users, sender_addr);
 
         let resource_account_addr = get_resource_account();
+        let fund_deposits = borrow_global_mut<FundDeposits>(resource_account_addr);
 
-        let fundDeposits = borrow_global_mut<FundDeposits>(resource_account_addr);
-        let apt_amount = coin::withdraw<AptosCoin>(sender, amount);
-        coin::merge(&mut fundDeposits.amount, apt_amount);
+        coin::transfer<AptosCoin>(sender, resource_account_addr, amount);
+        fund_deposits.amount = fund_deposits.amount + amount;
+
         event::emit(DepositEvent {
             depositor: sender_addr,
             amount: amount
@@ -153,10 +157,10 @@ module admin_address::fund_deposit {
         let resource_account_addr = get_resource_account();
         let fund_deposits = borrow_global_mut<FundDeposits>(resource_account_addr);
 
-        let coins_amount = coin::extract(&mut fund_deposits.amount, amount);
-        coin::deposit(to, coins_amount);
-    }
+        let resource_signer = account::create_signer_with_capability(&fund_deposits.signer_cap);
 
+        coin::transfer<AptosCoin>(&resource_signer, to, amount);
+    }
 
     #[test_only]
     fun mint_aptos_for_test(aptos_framework: &signer, receiver: &signer, amount: u64) {
@@ -240,16 +244,16 @@ module admin_address::fund_deposit {
 
     #[test(aptos_framework=@aptos_framework, admin=@admin_address, user=@0x356)]
     #[expected_failure(abort_code = NOT_WHITELISTED)]
-    public fun fail_deposit_for_non_whitelist(aptos_framework: &signer, admin: &signer, user: &signer) acquires WhiteListedUsers, FundDeposits {
+    public fun fail_deposit_for_non_whitelist(aptos_framework: &signer, admin: &signer, user: &signer) acquires FundDeposits, WhiteListedUsers {
         let admin_addr = signer::address_of(admin);
         let user_addr = signer::address_of(user);
 
         account::create_account_for_test(admin_addr);
         account::create_account_for_test(user_addr);
 
-        init_module(admin);
-
         mint_aptos_for_test(aptos_framework, user, 10);
+
+        init_module(admin);
 
         deposit_funds(user, 10);
     }
