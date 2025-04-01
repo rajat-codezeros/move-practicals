@@ -1,25 +1,23 @@
-module admin_address::FundDeposit {
+module admin_address::fund_deposit {
     use std::signer;
     use std::vector;
+    use std::event;
     use aptos_framework::coin;
     use aptos_framework::aptos_coin::{AptosCoin, Self};
     use aptos_framework::account;
-    use aptos_framework::event;
 
-    const NOT_INITIALIZED:u64 = 1;
-    const ALREADY_INITIALIZED:u64 = 2;
     const NOT_WHITELISTED:u64 = 3;
     const ALREADY_WHITELISTED:u64 = 4;
     const USER_IS_NOT_ADMIN:u64 = 5;
 
+    const SEED: vector<u8> = b"01";
+
     struct FundDeposits has key {
         amount: coin::Coin<AptosCoin>,
-        deposit_event: event::EventHandle<DepositEvent>
     }
 
     struct WhiteListedUsers has key {
         list_of_users: vector<address>,
-        user_event: event::EventHandle<WhiteListEvent>
     }
 
     #[event]
@@ -43,14 +41,6 @@ module admin_address::FundDeposit {
         assert!(addr == @admin_address, USER_IS_NOT_ADMIN);
     }
 
-    fun assert_uninitialized(addr: address) {
-        assert!(((!exists<FundDeposits>(addr)) || (!exists<WhiteListedUsers>(addr))), ALREADY_INITIALIZED);
-    }
-
-    fun assert_initialized(addr: address) {
-        assert!(((exists<FundDeposits>(addr)) && (exists<WhiteListedUsers>(addr))), NOT_INITIALIZED);
-    }
-
     fun assert_is_whitelisted(list: vector<address>, addr: address) {
         let (found, _index) = vector::index_of(&list, &addr);
         assert!(found, NOT_WHITELISTED);
@@ -62,70 +52,81 @@ module admin_address::FundDeposit {
     }
 
     #[view]
-    public fun isUserWhitelisted(addr: address): (bool, u64) acquires WhiteListedUsers {
+    public fun is_user_whitelisted(addr: address): (bool, u64) acquires WhiteListedUsers {
         let users = borrow_global_mut<WhiteListedUsers>(@admin_address);
         vector::index_of(&users.list_of_users, &addr)
     }
 
     #[view]
-    public fun getContractBalance(): u64 acquires FundDeposits {
-        coin::value(&borrow_global<FundDeposits>(@admin_address).amount)
+    public fun get_contract_balance(): u64 acquires FundDeposits {
+        let resource_account_addr = get_resource_account();
+        coin::value(&borrow_global<FundDeposits>(resource_account_addr).amount)
     }
 
     #[view]
-    public fun getUserslist(): vector<address> acquires WhiteListedUsers {
+    public fun get_users_list(): vector<address> acquires WhiteListedUsers {
         borrow_global_mut<WhiteListedUsers>(@admin_address).list_of_users
     }
 
-    public entry fun initialize(admin: &signer) {
+    #[view]
+    public fun get_resource_account(): address {
+        account::create_resource_address(&@admin_address, SEED)
+    }
+
+    fun init_module(admin: &signer) {
         let admin_addr = signer::address_of(admin);
         assert_is_owner(admin_addr);
-        assert_uninitialized(admin_addr);
 
-        let fundDeposits = FundDeposits {
+        let (resource_signer, resource_signer_cap) = account::create_resource_account(admin, SEED);
+        
+        let fund_deposits = FundDeposits {
             amount: coin::zero<AptosCoin>(),
-            deposit_event: account::new_event_handle<DepositEvent>(admin)
         };
-        move_to(admin, fundDeposits);
+        move_to(&resource_signer, fund_deposits);
 
         let whitelistedusers = WhiteListedUsers {
             list_of_users: vector::empty<address>(),
-            user_event: account::new_event_handle<WhiteListEvent>(admin)
         };
         move_to(admin, whitelistedusers);
     }
 
-    public entry fun depositFunds(sender: &signer, amount: u64) acquires WhiteListedUsers, FundDeposits {
-        assert_initialized(@admin_address);
+    public entry fun deposit_funds(sender: &signer, amount: u64) acquires WhiteListedUsers, FundDeposits {
 
         let sender_addr = signer::address_of(sender);
         let users = borrow_global_mut<WhiteListedUsers>(@admin_address);
         assert_is_whitelisted(users.list_of_users, sender_addr);
 
-        let fundDeposits = borrow_global_mut<FundDeposits>(@admin_address);
+        let resource_account_addr = get_resource_account();
+
+        let fundDeposits = borrow_global_mut<FundDeposits>(resource_account_addr);
         let apt_amount = coin::withdraw<AptosCoin>(sender, amount);
         coin::merge(&mut fundDeposits.amount, apt_amount);
-        event::emit_event(&mut fundDeposits.deposit_event, DepositEvent { depositor: sender_addr, amount: amount });
+        event::emit(DepositEvent {
+            depositor: sender_addr,
+            amount: amount
+        });
     }
 
-    public entry fun whiteListUser(admin: &signer, user_addresses: vector<address>) acquires WhiteListedUsers {
+    public entry fun whitelist_user(admin: &signer, user_addresses: vector<address>) acquires WhiteListedUsers {
         let admin_addr: address = signer::address_of(admin);
-        assert_initialized(admin_addr);
         assert_is_owner(admin_addr);
 
         let users_store = borrow_global_mut<WhiteListedUsers>(signer::address_of(admin));
 
         let length = vector::length<address>(&user_addresses);
         for (i in 0..length) {
+            assert_is_not_whitelisted(users_store.list_of_users, user_addresses[i]);
             vector::push_back(&mut users_store.list_of_users, user_addresses[i]);
         };
 
-        event::emit_event(&mut users_store.user_event, WhiteListEvent { action: Action::Added, addresses: user_addresses });
+        event::emit(WhiteListEvent {
+            action: Action::Added,
+            addresses: user_addresses
+        });
     }
 
-    public entry fun removeWhiteListUser(admin: &signer, user_addresses: vector<address>) acquires WhiteListedUsers {
+    public entry fun remove_whitelist_user(admin: &signer, user_addresses: vector<address>) acquires WhiteListedUsers {
         let admin_addr: address = signer::address_of(admin);
-        assert_initialized(admin_addr);
         assert_is_owner(admin_addr);
 
         let users_store = borrow_global_mut<WhiteListedUsers>(admin_addr);
@@ -136,19 +137,23 @@ module admin_address::FundDeposit {
 
             let (found, index) = vector::index_of(&users_store.list_of_users, &user_addresses[i]);
             if (found) {
-                vector::swap_remove(&mut users_store.list_of_users, index);
+                vector::remove(&mut users_store.list_of_users, index);
             };
         };
 
-        event::emit_event(&mut users_store.user_event, WhiteListEvent { action: Action::Removed, addresses: user_addresses });
+        event::emit(WhiteListEvent {
+            action: Action::Removed,
+            addresses: user_addresses
+        });
     }
 
-    public entry fun transferFunds(admin: &signer, to: address, amount: u64) acquires FundDeposits {
+    public entry fun transfer_funds(admin: &signer, to: address, amount: u64) acquires FundDeposits {
         assert_is_owner(signer::address_of(admin));
 
-        let fundDeposits = borrow_global_mut<FundDeposits>(signer::address_of(admin));
+        let resource_account_addr = get_resource_account();
+        let fund_deposits = borrow_global_mut<FundDeposits>(resource_account_addr);
 
-        let coins_amount = coin::extract(&mut fundDeposits.amount, amount);
+        let coins_amount = coin::extract(&mut fund_deposits.amount, amount);
         coin::deposit(to, coins_amount);
     }
 
@@ -168,67 +173,67 @@ module admin_address::FundDeposit {
     }
 
 
-    #[test(aptos_framework=@aptos_framework, admin=@admin_address, whiteListUser1=@0x123, whiteListUser2=@0x345)]
-    public fun test_flow(aptos_framework: &signer, admin: &signer, whiteListUser1: &signer, whiteListUser2: &signer) acquires WhiteListedUsers, FundDeposits {
+    #[test(aptos_framework=@aptos_framework, admin=@admin_address, whitelist_user1=@0x123, whitelist_user2=@0x345)]
+    public fun test_flow(aptos_framework: &signer, admin: &signer, whitelist_user1: &signer, whitelist_user2: &signer) acquires WhiteListedUsers, FundDeposits {
 
         let admin_addr = signer::address_of(admin);
-        let whitelist_user1_addr = signer::address_of(whiteListUser1);
-        let whitelist_user2_addr = signer::address_of(whiteListUser2);
+        let whitelist_user1_addr = signer::address_of(whitelist_user1);
+        let whitelist_user2_addr = signer::address_of(whitelist_user2);
 
         account::create_account_for_test(admin_addr);
         account::create_account_for_test(whitelist_user1_addr);
         account::create_account_for_test(whitelist_user2_addr);
 
         mint_aptos_for_test(aptos_framework, admin, 0);
-        mint_aptos_for_test(aptos_framework, whiteListUser1, 10);
-        mint_aptos_for_test(aptos_framework, whiteListUser2, 10);
+        mint_aptos_for_test(aptos_framework, whitelist_user1, 10);
+        mint_aptos_for_test(aptos_framework, whitelist_user2, 10);
 
-        initialize(admin);
+        init_module(admin);
 
         // add users to whitelist
         let user_addresses: vector<address> = vector::empty<address>();
         vector::push_back(&mut user_addresses, whitelist_user1_addr);
         vector::push_back(&mut user_addresses, whitelist_user2_addr);
 
-        whiteListUser(admin, user_addresses);
+        whitelist_user(admin, user_addresses);
 
         let users = borrow_global_mut<WhiteListedUsers>(@admin_address);
         assert_is_whitelisted(users.list_of_users, whitelist_user1_addr);
         assert_is_whitelisted(users.list_of_users, whitelist_user2_addr);
 
-        let whitelist_user_event_count = event::counter(&borrow_global<WhiteListedUsers>(admin_addr).user_event);
-        assert!(whitelist_user_event_count == 1, 10);
+        let events = event::emitted_events<WhiteListEvent>();
+        assert!(vector::length(&events) == 1, 0);
 
         // deposit funds by whitelisted users
-        depositFunds(whiteListUser1, 10);
-        depositFunds(whiteListUser2, 10);
+        deposit_funds(whitelist_user1, 10);
+        deposit_funds(whitelist_user2, 10);
 
         let balance_user1 = coin::balance<aptos_coin::AptosCoin>(whitelist_user1_addr);
         let balance_user2 = coin::balance<aptos_coin::AptosCoin>(whitelist_user1_addr);
         assert!((balance_user1 == 0) && (balance_user2 == 0), 11);
 
-        let contractBalance = getContractBalance();
-        assert!(contractBalance == 20, 12);
+        let contract_balance = get_contract_balance();
+        assert!(contract_balance == 20, 12);
 
-        let deposit_event_count = event::counter(&borrow_global<FundDeposits>(admin_addr).deposit_event);
-        assert!(deposit_event_count == 2, 13);
+        let events = event::emitted_events<DepositEvent>();
+        assert!(vector::length(&events) == 2, 0);
 
         // remove users from whitelist
-        let removeList: vector<address> = vector::empty<address>();
-        vector::push_back(&mut removeList, whitelist_user1_addr);
-        vector::push_back(&mut removeList, whitelist_user2_addr);
+        let remove_list: vector<address> = vector::empty<address>();
+        vector::push_back(&mut remove_list, whitelist_user1_addr);
+        vector::push_back(&mut remove_list, whitelist_user2_addr);
 
-        removeWhiteListUser(admin, removeList);
+        remove_whitelist_user(admin, remove_list);
 
-        let whitelist_user_event_count = event::counter(&borrow_global<WhiteListedUsers>(admin_addr).user_event);
-        assert!(whitelist_user_event_count == 2, 14);
+        let events = event::emitted_events<WhiteListEvent>();
+        assert!(vector::length(&events) == 2, 0);
 
         let users = borrow_global_mut<WhiteListedUsers>(@admin_address);
         assert_is_not_whitelisted(users.list_of_users, whitelist_user1_addr);
         assert_is_not_whitelisted(users.list_of_users, whitelist_user2_addr);
 
         // admin transfer funds
-        transferFunds(admin, admin_addr, 10);
+        transfer_funds(admin, admin_addr, 10);
         let balance = coin::balance<aptos_coin::AptosCoin>(admin_addr);
         assert!(balance == 10, 15);
     }
@@ -242,11 +247,11 @@ module admin_address::FundDeposit {
         account::create_account_for_test(admin_addr);
         account::create_account_for_test(user_addr);
 
-        initialize(admin);
+        init_module(admin);
 
         mint_aptos_for_test(aptos_framework, user, 10);
 
-        depositFunds(user, 10);
+        deposit_funds(user, 10);
     }
 
 }
