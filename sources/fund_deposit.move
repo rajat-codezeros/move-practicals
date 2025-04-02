@@ -53,9 +53,10 @@ module admin_address::fund_deposit {
     }
 
     #[view]
-    public fun is_user_whitelisted(addr: address): (bool, u64) acquires WhiteListedUsers {
+    public fun is_user_whitelisted(addr: address): bool acquires WhiteListedUsers {
         let users = borrow_global_mut<WhiteListedUsers>(@admin_address);
-        vector::index_of(&users.list_of_users, &addr)
+        let (found, _index) = vector::index_of(&users.list_of_users, &addr);
+        found
     }
 
     #[view]
@@ -201,9 +202,8 @@ module admin_address::fund_deposit {
 
         whitelist_user(admin, user_addresses);
 
-        let users = borrow_global_mut<WhiteListedUsers>(@admin_address);
-        assert_is_whitelisted(users.list_of_users, whitelist_user1_addr);
-        assert_is_whitelisted(users.list_of_users, whitelist_user2_addr);
+        assert!(is_user_whitelisted(whitelist_user1_addr), 1001);
+        assert!(is_user_whitelisted(whitelist_user2_addr), 1002);
 
         let events = event::emitted_events<WhiteListEvent>();
         assert!(vector::length(&events) == 1, 0);
@@ -232,9 +232,8 @@ module admin_address::fund_deposit {
         let events = event::emitted_events<WhiteListEvent>();
         assert!(vector::length(&events) == 2, 0);
 
-        let users = borrow_global_mut<WhiteListedUsers>(@admin_address);
-        assert_is_not_whitelisted(users.list_of_users, whitelist_user1_addr);
-        assert_is_not_whitelisted(users.list_of_users, whitelist_user2_addr);
+        assert!(!is_user_whitelisted(whitelist_user1_addr), 1003);
+        assert!(!is_user_whitelisted(whitelist_user2_addr), 1004);
 
         // admin transfer funds
         transfer_funds(admin, admin_addr, 10);
